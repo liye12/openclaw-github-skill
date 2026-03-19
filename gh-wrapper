@@ -1,0 +1,143 @@
+#!/bin/bash
+# gh compatibility wrapper — proxies to GitHub REST API via curl
+# Set GITHUB_TOKEN env var before running
+
+TOKEN="${GITHUB_TOKEN:-${TOKEN}}"
+API="https://api.github.com"
+AUTH="Authorization: token $TOKEN"
+
+cmd="$1"; shift || { echo "No command"; exit 1; }
+
+case "$cmd" in
+  auth)
+    if [ "$1" = "status" ]; then
+      curl -s -H "$AUTH" "$API/user" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('Logged in as @'+d['login']+' ('+str(d.get('name','no name'))+')')
+print('Type: '+d.get('type','User'))
+"
+    fi
+    ;;
+
+  api)
+    path="$1"; shift
+    curl -s -H "$AUTH" "${API}${path}" "$@"
+    ;;
+
+  pr)
+    sub="$1"; shift
+    case "$sub" in
+      checks)
+        PR_NUM="" REPO=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --repo) REPO="$2"; shift 2 ;;
+            *) PR_NUM="$1"; shift ;;
+          esac
+        done
+        [ -z "$REPO" ] && echo "Error: --repo required" && exit 1
+        curl -s -H "$AUTH" "${API}/repos/${REPO}/pulls/${PR_NUM}/checks" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for c in d.get('check_runs',[]):
+    print(c['name']+': '+(c.get('conclusion') or 'pending'))
+"
+        ;;
+      *) echo "gh pr $sub: not implemented" ;;
+    esac
+    ;;
+
+  run)
+    sub="$1"; shift
+    case "$sub" in
+      list)
+        REPO="" LIMIT="10"
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --repo) REPO="$2"; shift 2 ;;
+            --limit) LIMIT="$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        [ -z "$REPO" ] && echo "Error: --repo required" && exit 1
+        curl -s -H "$AUTH" "${API}/repos/${REPO}/actions/runs?per_page=${LIMIT}" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for r in d.get('workflow_runs',[]):
+    status = r.get('conclusion') or r.get('status','?')
+    print(r['name']+' #'+str(r['run_number'])+' ['+status+'] '+r['head_branch'])
+"
+        ;;
+      view)
+        RUN_ID="" REPO=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --repo) REPO="$2"; shift 2 ;;
+            --log-failed) echo "Tip: gh-wrapper api /repos/$REPO/actions/runs/$RUN_ID/logs" && shift ;;
+            *) RUN_ID="$1"; shift ;;
+          esac
+        done
+        [ -z "$REPO" ] && echo "Error: --repo required" && exit 1
+        curl -s -H "$AUTH" "${API}/repos/${REPO}/actions/runs/${RUN_ID}" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('name:   '+str(d.get('name')))
+print('run:    #'+str(d.get('run_number')))
+print('status: '+str(d.get('status'))+' / '+str(d.get('conclusion')))
+print('branch: '+str(d.get('head_branch')))
+print('actor:  '+str(d.get('actor',{}).get('login')))
+print('event:  '+str(d.get('event')))
+print('url:    '+str(d.get('html_url')))
+"
+        ;;
+      *) echo "gh run $sub: not implemented" ;;
+    esac
+    ;;
+
+  issue)
+    sub="$1"; shift
+    case "$sub" in
+      list)
+        REPO="" LIMIT="10"
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --repo) REPO="$2"; shift 2 ;;
+            --limit) LIMIT="$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        [ -z "$REPO" ] && echo "Error: --repo required" && exit 1
+        curl -s -H "$AUTH" "${API}/repos/${REPO}/issues?per_page=${LIMIT}" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for i in d:
+    print('#'+str(i['number'])+' ['+i.get('state','?')+'] '+i.get('title',''))
+"
+        ;;
+      view)
+        NUM="" REPO=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --repo) REPO="$2"; shift 2 ;;
+            *) NUM="$1"; shift ;;
+          esac
+        done
+        [ -z "$REPO" ] || [ -z "$NUM" ] && echo "Error: --repo and issue number required" && exit 1
+        curl -s -H "$AUTH" "${API}/repos/${REPO}/issues/${NUM}" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('Title:  '+d.get('title',''))
+print('State:  '+d.get('state',''))
+print('Author: '+d.get('user',{}).get('login',''))
+print('URL:    '+d.get('html_url',''))
+print()
+print(d.get('body',''))
+"
+        ;;
+      *) echo "gh issue $sub: not implemented" ;;
+    esac
+    ;;
+
+  *) echo "gh $cmd: not supported" ;;
+esac
